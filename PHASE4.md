@@ -178,3 +178,63 @@ What this resolves:
 4. Nothing else outstanding for Gatekeeper: registration, endpoint,
    preflight, and practice are all green. Steal the VFY / other
    tracks were not touched.
+
+## Phase 4b — Kurier wired, tested, and reverted (2026-11-15)
+
+Follow-up to §7 item 1: the Kurier account was verified and a key
+minted after §7 was written (see PHASE3.md "Kurier activation"), so
+`KURIER_API_KEY` was wired into the Render service, tested end to
+end, and then **deliberately reverted** — the live service is back
+to DRY_RUN, for a measured latency reason, not an error.
+
+**Wiring (succeeded).** Via the Render API: env vars re-PUT as the
+full set (`AGENT_GAMES_SECRET` + `SEEN_STORE_PATH` preserved
+verbatim, `KURIER_API_KEY` added, 40 chars, verified by key +
+length). Deploy `dep-dbsh3v3bc2fs73bi225g` live in ~35 s; health
+GET 200 in 0.79 s.
+
+**The wiring works — proof.** (a) Kurier quota (`/me/rate-limit-quota`)
+went dailyUsage **1 → 2** across one platform practice dispatch:
+the agent made a real submission. (b) A self-signed probe task
+(platform envelope format, real HMAC secret) posted directly to
+the live endpoint returned, verbatim fields: decision `APPROVE`,
+reason_code `VALID_CONDITION`, proof present (13 public signals),
+and **`proof_tx: 0x0253843c20b206383baeed5a6f034e88814a3a4ac02d1bb2732f5da33dc87df9`**
+— a real zkVerify txHash, not a `dry-run:` placeholder.
+
+**Why it was reverted anyway — latency.** `lib/kurier.js` polls
+until Finalized before the response leaves (bounded by the 40 s
+poll budget / 55 s response deadline in `lib/config.js`).
+Finalization is slow and variable: 26.6 s in the standalone test,
+and the probe round-trip took **44.2 s**. Consequences:
+
+- The platform practice dispatch with the key wired **failed**:
+  `{"ok":false, "error":"Agent did not respond before the timeout."}`
+  (diagnostic: FAILED (network), task
+  `practice_99416a68-bb04-4fb6-827d-cf6bdf7e381f`). Practice
+  enforces a **15 s** deadline (issued_at → deadline_at), which a
+  wait-for-Finalized response cannot meet.
+- Scored rounds allow 60 s, so ~44 s responses would *probably*
+  pass — but with only ~16 s of headroom and finalization variance
+  (26.6 s best observed, 40 s cap once), a slow aggregation round
+  risks scored timeouts (−2 each). `proof_tx` is only an optional
+  audit pointer; the proof the platform actually verifies travels
+  in the response body either way.
+
+**Revert (done, verified).** `KURIER_API_KEY` deleted via the same
+full-set PUT (other vars intact, verified); deploy
+`dep-dbsh5rl6e07s739rnbd0` live; health 200. A confirmation practice
+dispatch then reproduced the §6 profile exactly: task
+`practice_23a01109-0172-41ad-9d22-2e70800ee34b`, THRESHOLD_MISMATCH,
+`correct: true`, `proofStatus: "verified"`, platform latency
+**8308 ms**, and the agent response embedded in the result shows
+`proof_tx: "dry-run:d7259a63…"` — DRY_RUN restored. (That embedded
+response field also confirms how a wired attempt would have been
+audited, had it answered in time.)
+
+**To re-enable safely later:** make the Kurier wait short — e.g.
+return `txRef || jobId` as soon as the job reaches Submitted
+(txHash exists ~4 s in) instead of polling to Finalized, or cap
+`KURIER_POLL_BUDGET_MS` at ~8–10 s. Either keeps real on-chain
+pointers at DRY_RUN-like latency. Until then, DRY_RUN is the
+scored-round configuration: proven correct + verified at ~8 s.

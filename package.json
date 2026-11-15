@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/harness.js"
+    "test": "node test/harness.js && node test/kurier.test.js"
   },
   "keywords": [],
   "author": "",

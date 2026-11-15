@@ -243,3 +243,61 @@ constraints). Flow discovered from the live OpenAPI spec at
   kurier.xyz frontend (`/api-key`, `/me/rate-limit-quota` routes seen in
   the login bundle) using the session from `POST /api/v1/auth/login`.
   Quota/credits therefore still unconfirmed — check after verification.
+
+### Kurier activation + first real submission (2026-11-15, post-verification)
+
+The account owner clicked the email verification link; the account is now
+fully active and the Kurier path is tested end-to-end with a REAL mainnet
+submission:
+
+- **Login OK.** `POST /api/v1/auth/login` → HTTP 200 `{success: true}`,
+  session cookies issued on `.kurier.xyz` (accessToken / refreshToken /
+  sessionId / csrfToken). `GET /api/v1/auth/verify` →
+  `{valid: true, user: {id: 170, email: g28158551@gmail.com,
+  role: "USER", isEmailVerified: true}}`.
+- **API key minted.** The mint route is NOT in the public OpenAPI spec:
+  it is `POST /api/v1/api-keys` for listing (GET → `{keys: [...]}`) but
+  creation is **`POST /api/v1/api-key`** (singular), session cookie +
+  `x-csrf-token` header, body `{name}` → 200 `{apiKey: <40 hex chars>}`.
+  Key record: id 290, `disabled: false`, rateLimitId 2. Key value saved
+  to `~/workspace/agentgames/kurier-api-key.txt` (mode 600) — not
+  reproduced here.
+- **Pricing / quota (confirmed empirically).** `GET /api/v1/pricing/`:
+  x402 is enabled only for the KEYLESS endpoints — `POST
+  /api/v1/submit-proof` (no key) costs **$0.005 USDC** per submission
+  (Base, eip155:8453, facilitator coinbase-cdp); keyless register-vk
+  $0.001. The KEYED route (`/submit-proof/{apiKey}`) is metered against
+  account quota instead: `GET /api/v1/me/rate-limit-quota` →
+  dailyLimit **100,000**, monthlyLimit **3,200,000** requests. Usage
+  went 0 → 1 after exactly one submission and the key's `lastUsed`
+  updated — key-based submissions cost quota, NOT money. No 402 was
+  seen on the keyed route.
+- **First real submission (test).** Fresh gatekeeper proof generated
+  locally with lib/prover.js (THRESHOLD_MISMATCH witness: minimum 1000,
+  balance 999, decision 0; prove 790 ms; locally verified against
+  build/verification_key.json). Submitted via curl with the exact
+  lib/kurier.js payload (`vkRegistered: true`, official gatekeeper
+  vkHash, curve "bn128"):
+  - submit → HTTP 200 in ~1.0 s, `jobId
+    d9420a56-e097-11f1-838e-1e6a0d14f999`, `optimisticVerify:
+    "success"`.
+  - job-status sequence: **Submitted** (t≈3.9 s, txHash already set) →
+    **IncludedInBlock** (t≈6.7 s) → **Finalized** (t≈26.6 s). Total
+    submit→Finalized **26.6 s** — inside the 60 s platform budget with
+    ~2× headroom; kurier.js still degrades gracefully (decision + proof,
+    best-effort proof_tx) if finalization ever runs long.
+  - Finalized txHash `0x96de618712a348b7721680833f79053e590932aaf3f0b002e0730c4bda848cd9`
+    (zkVerify mainnet extrinsic; Subscan:
+    https://zkverify.subscan.io/extrinsic/0x96de618712a348b7721680833f79053e590932aaf3f0b002e0730c4bda848cd9);
+    blockHash `0x4097ef22d537f4985b6ae490af653988746546ac6abcf1deed284dce922b63d4`.
+    `aggregationId` was null at Finalized — the per-proof extrinsic is
+    the audit pointer kurier.js returns, which is what matters.
+  - Assumption #3 from phase 3 is now CONFIRMED against a live job:
+    `jobId`, `status`, `txHash` field names all match kurier.js's
+    primary picks.
+- **Recommendation:** wire `KURIER_API_KEY` into the Render service now
+  (unset ⇒ DRY_RUN placeholders). Real submissions are quota-metered
+  (100k/day is ~4 orders of magnitude above the 8 tasks/day the arena
+  sends), finalize in ~27 s worst-observed case, and give scored play
+  real on-chain `proof_tx` audit pointers. No payment method is needed
+  or attached to the account.
