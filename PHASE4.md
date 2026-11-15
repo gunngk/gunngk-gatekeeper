@@ -238,3 +238,90 @@ return `txRef || jobId` as soon as the job reaches Submitted
 `KURIER_POLL_BUDGET_MS` at ~8–10 s. Either keeps real on-chain
 pointers at DRY_RUN-like latency. Until then, DRY_RUN is the
 scored-round configuration: proven correct + verified at ~8 s.
+
+## Phase 4c — Kurier early-return: real proof_tx at practice-safe latency (2026-11-15)
+
+Implements the "re-enable safely" fix prescribed at the end of
+Phase 4b. The live service now runs **with** `KURIER_API_KEY` set
+and returns real on-chain proof pointers — at 10.7 s platform
+latency instead of the 44.2 s that got the key reverted in 4b.
+
+**The change** (commit `a7f8d62adb8121310fecad777450180fc851f885`):
+
+- `lib/kurier.js`: after a successful submit-proof, poll job-status
+  only until the job **first reports a txHash** (status
+  Submitted/IncludedInBlock), a terminal status, the poll-budget
+  cap, or the caller's response deadline — whichever comes first —
+  then return the txHash as `proof_tx` immediately. The job keeps
+  finalizing on Kurier/zkVerify unwatched; `proof_tx` is only an
+  audit pointer, and the proof the platform verifies travels in the
+  response body either way. If the submit response already carries
+  a txHash, no polling happens at all.
+- Fallbacks: no txHash within the cap but a jobId exists →
+  `proof_tx` = jobId; submission itself failed (HTTP error, or a
+  response with neither jobId nor txHash) → `proof_tx` = the
+  dry-run-style `dry-run:<sha256>` placeholder, so the response
+  always carries a proof_tx-shaped pointer.
+- `lib/config.js`: `KURIER_POLL_BUDGET_MS` default **40000 → 10000**
+  (env-overridable); `.env.example` updated to match. Worst-case
+  handler latency stays ≤ ~15 s (prove + submit + ≤10 s poll cap).
+  `lib/handler.js` needed no change — it already passes
+  `min(responseDeadline, now + pollBudget)` as the absolute deadline,
+  and the client now also enforces the cap internally.
+
+**Local tests** (`npm test`): harness **11/11** (unchanged, still
+DRY_RUN end-to-end) plus a new `test/kurier.test.js` against a mock
+Kurier server, **5/5**: early return on first txHash (2 polls,
+250 ms at a 100 ms test interval, polling stops); txHash in the
+submit response → 0 polls; no txHash → jobId fallback at the
+~400 ms test cap (not the 55 s deadline); terminal `Failed` →
+immediate jobId fallback; submit HTTP 500 → `dry-run:` placeholder.
+
+**Deploy**: pushed with the phase-4 secret-scan discipline (staged
+diff scanned against 11 live secret values — 0 matches). Render env
+re-PUT as the full set with `KURIER_API_KEY` added (40 chars);
+`AGENT_GAMES_SECRET` and `SEEN_STORE_PATH=/tmp/seen.json` verified
+byte-identical afterwards. (An infra restart interrupted the first
+env/deploy script after its PUT had landed but before any new
+deploy existed; state was re-read read-only, and the deploy of the
+new commit was then triggered explicitly.) Deploy
+`dep-dbshbibl550s738foa6g`, commit `a7f8d62a` — live; health GET
+200 in 0.66 s.
+
+**Practice verification** (one `dispatchPracticeTask`, saved
+session) — platform verdict, verbatim (trimmed):
+
+```json
+{"ok":true,
+ "taskId":"practice_6a4c38cf-634c-440e-a606-f5b97b4c38af",
+ "category":"proof-gatekeeper",
+ "trapType":"RECIPIENT_MISMATCH",
+ "expectedDecision":"REJECT",
+ "agentDecision":"REJECT",
+ "correct":true,
+ "proofStatus":"verified",
+ "reasonCode":"RECIPIENT_MISMATCH",
+ "explanation":"Correct decision. The transfer recipient does not match the condition's required recipient.",
+ "latency":10684}
+```
+
+- Latency **10,684 ms** vs the 15 s practice deadline (DRY_RUN
+  baseline 8,308 ms; wait-for-Finalized wiring in 4b timed out
+  outright). Scored rounds allow 60 s — headroom is now ~49 s.
+- The agent response embedded in the result carries
+  `proof_tx: "0x56c97e75a0dc78c849287227493fcdc2a28989449425a8af0260093f2557451d"`
+  — a **real zkVerify txHash**, not a `dry-run:` placeholder.
+- Kurier quota (`/me/rate-limit-quota`) `dailyUsage` **3 → 4**
+  across the dispatch: exactly one real submission.
+
+All acceptance criteria passed, so the step-5 revert was **not**
+triggered.
+
+**Final live configuration**: Render `srv-dbsgaruk1f9s7396ume0`
+(free / frankfurt), commit `a7f8d62a`, env =
+`AGENT_GAMES_SECRET` + `SEEN_STORE_PATH=/tmp/seen.json` +
+`KURIER_API_KEY` (real submissions, early-return polling,
+`KURIER_POLL_BUDGET_MS` at its 10000 default). Endpoint unchanged:
+https://gunngk-gatekeeper.onrender.com/agent, agent status active.
+Remaining known caveats are unchanged from §7: free-tier cold
+starts after long idle gaps, and the per-instance `/tmp` seen-set.
