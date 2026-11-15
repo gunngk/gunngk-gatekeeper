@@ -1,0 +1,11 @@
+agentgames.zkverify.io wants you to sign in with your Ethereum account:
+0x1804fCA5aDFF512b94dFf658a2aDee2790B84f22
+
+Sign in to Agent Games with your wallet.
+
+URI: https://agentgames.zkverify.io
+Version: 1
+Chain ID: 1
+Nonce: c8bdc1661e1ccf4d891946cc726824d515cd86a33efafac669cdc2da21a5f34c0858e447191044778eed5f2b5cfd7b28
+Issued At: 2026-11-15T00:06:12.354Z
+Expiration Time: 2026-11-15T00:11:12.354Z

@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+node_modules/
+data/
+*.log
+
+# secrets — never commit
+session.json
+wallet.json
+github-credentials.json
+github-login.txt
+hmac-secret.txt
+kurier-credentials.json
+kurier-api-key.txt
+deploy-tokens.json
