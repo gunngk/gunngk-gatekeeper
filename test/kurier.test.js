@@ -37,7 +37,11 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify(obj));
     };
     if (req.method === "POST" && req.url.includes("/submit-proof/")) {
-      return send(behavior.submit.code, behavior.submit.body);
+      // submit may be a single {code, body} or a sequence consumed in order
+      const seq = Array.isArray(behavior.submit) ? behavior.submit : [behavior.submit];
+      const step = seq[Math.min(behavior.submitCount || 0, seq.length - 1)];
+      behavior.submitCount = (behavior.submitCount || 0) + 1;
+      return send(step.code, step.body);
     }
     if (req.method === "GET" && req.url.includes("/job-status/")) {
       behavior.pollCount += 1;
@@ -157,6 +161,44 @@ async function main() {
         behavior.pollCount === 0;
       record("submit failure placeholder", ok,
         `proofTx=${out.proofTx && out.proofTx.slice(0, 16)}… status=${out.status}`);
+    }
+    // 6. Submit fails twice (500) then succeeds -> retry recovers, txHash returned
+    {
+      resetBehavior({
+        submit: [
+          { code: 500, body: { error: "boom" } },
+          { code: 503, body: { error: "boom" } },
+          { code: 200, body: { jobId: "job-6", status: "Submitted", txHash: TX } },
+        ],
+        polls: [{ status: "Finalized", txHash: TX }],
+      });
+      const { submitProof } = loadKurier({ ...baseEnv, KURIER_POLL_BUDGET_MS: "10000" });
+      const t0 = Date.now();
+      const out = await submitProof(PROOF, SIGNALS, deadline());
+      const dt = Date.now() - t0;
+      const ok =
+        out.proofTx === TX &&
+        out.jobId === "job-6" &&
+        behavior.submitCount === 3 &&
+        behavior.pollCount === 0 &&
+        dt >= 1900 && dt < 8000;
+      record("submit retry recovers on 3rd attempt", ok,
+        `proofTx=${out.proofTx && out.proofTx.slice(0, 10)}… submits=${behavior.submitCount} elapsed=${dt}ms`);
+    }
+
+    // 7. Explicit pollBudgetMs override is honored (400ms cap, not the 10000 default)
+    {
+      resetBehavior({
+        submit: { code: 200, body: { jobId: "job-7", status: "Queued" } },
+        polls: [{ status: "Queued" }],
+      });
+      const { submitProof } = loadKurier({ ...baseEnv, KURIER_POLL_BUDGET_MS: "10000" });
+      const t0 = Date.now();
+      const out = await submitProof(PROOF, SIGNALS, deadline(), 400);
+      const dt = Date.now() - t0;
+      const ok = out.proofTx === "job-7" && dt >= 350 && dt < 3000;
+      record("explicit poll budget override honored", ok,
+        `proofTx=${out.proofTx} elapsed=${dt}ms (override 400ms)`);
     }
   } finally {
     server.close();

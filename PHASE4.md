@@ -314,9 +314,6 @@ session) — platform verdict, verbatim (trimmed):
 - Kurier quota (`/me/rate-limit-quota`) `dailyUsage` **3 → 4**
   across the dispatch: exactly one real submission.
 
-All acceptance criteria passed, so the step-5 revert was **not**
-triggered.
-
 **Final live configuration**: Render `srv-dbsgaruk1f9s7396ume0`
 (free / frankfurt), commit `a7f8d62a`, env =
 `AGENT_GAMES_SECRET` + `SEEN_STORE_PATH=/tmp/seen.json` +
@@ -325,3 +322,85 @@ triggered.
 https://gunngk-gatekeeper.onrender.com/agent, agent status active.
 Remaining known caveats are unchanged from §7: free-tier cold
 starts after long idle gaps, and the per-instance `/tmp` seen-set.
+
+All acceptance criteria passed, so the step-5 revert was **not**
+triggered.
+
+## Phase 4d — Round 3 proof failure: root cause + competition-mode fix (2026-11-16)
+
+**Round 3 result (15 Nov 17:30 – 16 Nov 03:30 WIB): 80 points, rank #30.**
+Dashboard aggregate: issued 8, responded 8, **correct 8, timedOut 0,
+verified 0, proofPending 0**; points ledger shows 8× (+12 correct
+decision) and 8× (−2 `proof_failure`), each failure ~15–30 ms after
+its +12. So the decisions were perfect and the proofs were the only
+loss (−16; score would have been 96+ before any reliability bonus).
+
+**Investigation (evidence, not inference).**
+- Live service during the round: deploy `dep-dbshbibl550s738foa6g`,
+  commit `a7f8d62a` — **no redeploy mid-round**. Env verified via the
+  Render API: `KURIER_API_KEY` set (40 chars), `AGENT_GAMES_SECRET`
+  set, `SEEN_STORE_PATH=/tmp/seen.json`. (Values were visible in the
+  API response; they match the locked local files and are not
+  reproduced here.)
+- Kurier account (session API): monthlyUsage **4 → 12** across the
+  round and key `lastUsed` **2026-11-15T20:00:33Z** — exactly **8
+  submissions, one per task**, the last at the final task's time.
+  So the agent submitted every proof; the failure was not a missing
+  submission and not DRY_RUN.
+- Practice re-verification (2026-11-16 00:49 UTC, pre-fix):
+  `dispatchPracticeTask` → EXPIRED_CONDITION, correct REJECT,
+  **`proofStatus: "verified"`**, latency **4,981 ms**, response
+  `proof_tx` = a **real zkVerify txHash**. The live code path
+  verifies end-to-end right now.
+- Local proof check (snarkjs vs `build/verification_key.json`):
+  APPROVE + REJECT proofs built for the **actual Round-3 task ids**
+  (`task_R03_7b6fe644…`, `task_R03_80fc17f2…`) both verify locally;
+  the derived taskId signal matches the platform's own practice
+  public_signals exactly. The prover is correct for live-format ids
+  and for APPROVE decisions (a path practice had never graded).
+- What could NOT be retrieved: the exact `proof_tx` values the
+  platform recorded per task — the dashboard exposes only aggregates
+  + the points ledger (no task-detail API), Kurier's job list is
+  admin-only, and Render's logs API 404s for this key. So the
+  mechanism below is the best-supported explanation, not a directly
+  observed value.
+
+**Most likely mechanism.** The 10 s poll cap (Phase 4c, tuned for
+the 15 s *practice* deadline) let `proof_tx` fall back to the
+**jobId** whenever Kurier was slow to surface the first txHash —
+plausible for all 8 tasks at once because every competing agent
+submits to Kurier simultaneously during a round window, while the
+single-agent tests measured ~4 s. The platform's *scored* verification
+evidently requires a real on-chain txHash: practice mode verified
+with a `dry-run:` placeholder (Phase 4b), but scored mode failed
+all 8 despite valid body proofs and accepted submissions. A
+secondary contributor cannot be ruled out: a transient submit
+failure used to fall straight through to the dry-run placeholder
+with no retry.
+
+**The fix (commit — see git log; deployed by Render autoDeploy).**
+- Mode-aware poll budget: `KURIER_POLL_BUDGET_COMPETITION_MS`
+  (default **30000**) for `mode === "competition"` envelopes;
+  practice keeps the 10 s cap. Worst-case scored latency ≈ 33 s,
+  inside the 60 s budget. (`lib/config.js`, `lib/handler.js`.)
+- Submit retry: transient submit failures (HTTP 5xx / network)
+  retried up to 2 more times with a 1 s backoff inside the
+  deadline; only a persistent failure returns the placeholder.
+  (`lib/kurier.js`; `submitProof` takes an optional poll-budget
+  override.)
+- One-line audit log per task (decision, reason_code, proof_tx,
+  Kurier status/jobId, ms) so the next investigation has the
+  pointer the platform actually received. (Render logs API is
+  unreachable from here, so this also aids dashboard-side reading.)
+- `.env.example` documents the new variable. Tests: harness 11/11,
+  kurier 7/7 (2 new: retry recovery, budget override).
+
+**Post-fix verification.** (Filled in after deploy — see below.)
+
+**Residual risks (unchanged).** Free-tier cold starts after long
+idle gaps; `/tmp` seen-set resets on redeploy/spin-down. The
+platform's exact scored-verification rule (body proof vs on-chain
+proof_tx) is still inferred, not published — if Round 4 still
+shows 0 verified despite real txHashes, the next step is to ask
+the platform (or inspect a scored task's recorded proof_tx) rather
+than change the agent again.
