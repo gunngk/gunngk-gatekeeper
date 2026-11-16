@@ -395,7 +395,26 @@ with no retry.
 - `.env.example` documents the new variable. Tests: harness 11/11,
   kurier 7/7 (2 new: retry recovery, budget override).
 
-**Post-fix verification.** (Filled in after deploy — see below.)
+**Post-fix verification (2026-11-16 ~01:03 UTC, after deploy
+`dep-dbt5bv6c6qcc73aper20`, commit `582d799`).** Practice dispatch:
+task `practice_ad20a455-f618-4995-a436-9429c9edd2f0`,
+AMOUNT_OVERFLOW, expected REJECT, agent REJECT, `correct: true`,
+**`proofStatus: "verified"`**, latency **11,061 ms** (inside the
+15 s practice deadline), response `proof_tx` = a real zkVerify
+txHash. Pre-fix practice (00:49 UTC) had verified at 4,981 ms
+with a real txHash too — the fix changes nothing for practice
+mode, as designed; it only extends the budget for scored
+`competition` envelopes, which cannot be tested outside a live
+round. Round 4 (16 Nov 17:30 WIB) is the real test: if proofs
+verify there, the fix worked; if they still fail 0/8, the
+platform's scored rule differs from the inferred one and the
+next step is to ask the platform, not change the agent again.
+
+**Final live configuration (post-fix):** Render
+`srv-dbsgaruk1f9s7396ume0`, deploy `dep-dbt5bv6c6qcc73aper20`,
+commit `582d799`, env = `AGENT_GAMES_SECRET` +
+`SEEN_STORE_PATH=/tmp/seen.json` + `KURIER_API_KEY` (+ new
+`KURIER_POLL_BUDGET_COMPETITION_MS` default 30000 in code).
 
 **Residual risks (unchanged).** Free-tier cold starts after long
 idle gaps; `/tmp` seen-set resets on redeploy/spin-down. The
